@@ -1,0 +1,42 @@
+# reset_db.py
+from passlib.hash import pbkdf2_sha256
+import sqlite3
+import os
+
+DB_NAME = "user_management.db"
+
+def reset_database():
+    try:
+        # Remove existing database
+        if os.path.exists(DB_NAME):
+            os.remove(DB_NAME)
+            
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        
+        # Create fresh table
+        c.execute('''CREATE TABLE users
+                    (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT UNIQUE,
+                    password_hash TEXT,
+                    role TEXT,
+                    full_name TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+        
+        # Insert admin user
+        hashed_pw = pbkdf2_sha256.hash("admin123")  # Default password
+        c.execute('''INSERT INTO users 
+                    (username, password_hash, role, full_name)
+                    VALUES (?, ?, ?, ?)''',
+                  ("admin", hashed_pw, "admin", "System Admin"))
+        
+        conn.commit()
+        print("✅ Database reset successfully!")
+        
+    except Exception as e:
+        print(f"❌ Error: {str(e)}")
+    finally:
+        conn.close()
+
+if __name__ == "__main__":
+    reset_database()
