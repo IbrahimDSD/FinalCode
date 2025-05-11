@@ -380,7 +380,7 @@ def create_bar_chart(summary_df, buckets, type="cash"):
     labels = [reshape_text(c) for c in customers]
     prop = setup_arabic_font()
     plt.figure(figsize=(12, 6))
-    bars = plt.bar(range
+    bars = plt.bar(range)
     bars = plt.bar(range(len(labels)), overdues, tick_label=labels)
     for bar in bars:
         y = bar.get_height()
