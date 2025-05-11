@@ -629,9 +629,9 @@ def build_detailed_pdf(detail_df, summary_df, sp_name, as_of, selected_customer,
 # ----------------- Test Function -----------------
 def test_overdues():
     # Test parameters
-    username = "test_user"  # Replace with a valid username
-    password = "test_password"  # Replace with a valid password
-    sp_id = None  # None for "All" salespersons
+    username = "admin"  # Replace with a valid username
+    password = "admin123"  # Replace with a valid password
+    sp_id = 20  # None for "All" salespersons
     selected_customer = "الكل"  # "الكل" for all customers
     as_of = date.today()
     grace = 30
