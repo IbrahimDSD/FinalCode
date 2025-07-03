@@ -82,19 +82,17 @@ def convert_gold(row):
 
 # ----------------- FIFO Processing -----------------
 def process_fifo(debits, credits):
-    """Process transactions using FIFO with top priority for functionid=3104 and plantid=56"""
-    # Separate transactions into three categories:
-    top_priority = [d for d in debits if d.get('functionid') == 3104 and d.get('plantid') == 56]
-    normal_priority = [d for d in debits if d.get('functionid') == 3104 and d.get('plantid') != 56]
-    other_debits = [d for d in debits if d.get('functionid') != 3104]
+    """Process transactions using FIFO with priority for functionid=3104 AND plantid=56"""
+    # Separate priority transactions (functionid=3104 AND plantid=56)
+    priority_debits = [d for d in debits if d.get('is_priority', False)]
+    normal_debits = [d for d in debits if not d.get('is_priority', False)]
     
-    # Sort each category by date
-    top_priority = sorted(top_priority, key=lambda x: x['date'])
-    normal_priority = sorted(normal_priority, key=lambda x: x['date'])
-    other_debits = sorted(other_debits, key=lambda x: x['date'])
+    # Sort both lists by date
+    priority_debits = sorted(priority_debits, key=lambda x: x['date'])
+    normal_debits = sorted(normal_debits, key=lambda x: x['date'])
     
-    # Combine with top priority first
-    debits_q = deque(top_priority + normal_priority + other_debits)
+    # Combine with priority first
+    debits_q = deque(priority_debits + normal_debits)
     
     history = []
     for credit in sorted(credits, key=lambda x: x['date']):
@@ -149,20 +147,17 @@ def process_transactions(raw, discounts, extras, start_date):
             amt = valid['final'].sum()
         else:
             amt = orig
-        return pd.Series({
-            'date': fr['date'], 
-            'reference': ref,
-            'currencyid': cur, 
-            'amount': amt, 
-            'original_amount': orig,
-            'functionid': fr['functionid'],
-            'plantid': fr['plantid']  # Keep plantid for prioritization
-        })
+        return pd.Series({'date': fr['date'], 'reference': ref,
+                          'currencyid': cur, 'amount': amt, 'original_amount': orig,
+                          'functionid': fr['functionid'], 'plantid': fr['plantid']})
 
-    grp = raw.groupby(['functionid', 'recordid', 'date', 'reference', 'currencyid', 'amount'])
+    grp = raw.groupby(['functionid', 'recordid', 'date', 'reference', 'currencyid', 'amount', 'plantid'])
     txs = grp.apply(group_fn).reset_index(drop=True)
     txs['date'] = pd.to_datetime(txs['date'])
     txs['converted'] = txs.apply(convert_gold, axis=1)
+    
+    # Mark priority transactions (functionid=3104 AND plantid=56)
+    txs['is_priority'] = (txs['functionid'] == 3104) & (txs['plantid'] == 56)
     
     return txs
 
@@ -173,16 +168,10 @@ def calculate_aging_reports(transactions):
     transactions['converted'] = transactions.apply(convert_gold, axis=1)
     
     for _, r in transactions.iterrows():
-        entry = {
-            'date': r['date'], 
-            'reference': r['reference'],
-            'amount': abs(r['converted']), 
-            'remaining': abs(r['converted']),
-            'paid_date': None, 
-            'vat_amount': r['vat_amount'],
-            'functionid': r['functionid'],
-            'plantid': r['plantid']  # Keep plantid for prioritization
-        }
+        entry = {'date': r['date'], 'reference': r['reference'],
+                 'amount': abs(r['converted']), 'remaining': abs(r['converted']),
+                 'paid_date': None, 'vat_amount': r['vat_amount'],
+                 'is_priority': r['is_priority']}
                  
         if r['currencyid'] == 1:
             (cash_debits if r['amount'] > 0 else cash_credits).append(entry)
@@ -207,6 +196,7 @@ def calculate_aging_reports(transactions):
 def process_fifo_detailed(debits, credits):
     """
     Simulate FIFO with high performance using integer arithmetic (cents).
+    Priority for functionid=3104 AND plantid=56
     """
     cutoff = pd.to_datetime("2023-01-01")
     
@@ -222,22 +212,19 @@ def process_fifo_detailed(debits, credits):
             'currencyid': d['currencyid'],
             'invoice_amount': inv_amt,
             'remaining_cents': int(inv_amt * 100),
-            'functionid': d.get('functionid', 0),
-            'plantid': d.get('plantid', 0)
+            'is_priority': d.get('is_priority', False)
         })
     
-    # Separate transactions into three categories:
-    top_priority = [d for d in debits_processed if d.get('functionid') == 3104 and d.get('plantid') == 56]
-    normal_priority = [d for d in debits_processed if d.get('functionid') == 3104 and d.get('plantid') != 56]
-    other_debits = [d for d in debits_processed if d.get('functionid') != 3104]
+    # Separate priority and normal debits
+    priority_debits = [d for d in debits_processed if d['is_priority']]
+    normal_debits = [d for d in debits_processed if not d['is_priority']]
     
-    # Sort each category by date
-    top_priority = sorted(top_priority, key=lambda x: x['date'])
-    normal_priority = sorted(normal_priority, key=lambda x: x['date'])
-    other_debits = sorted(other_debits, key=lambda x: x['date'])
+    # Sort each group by date
+    priority_debits = sorted(priority_debits, key=lambda x: x['date'])
+    normal_debits = sorted(normal_debits, key=lambda x: x['date'])
     
-    # Combine with top priority first
-    all_debits = top_priority + normal_priority + other_debits
+    # Combine with priority first
+    all_debits = priority_debits + normal_debits
     debits_q = deque(all_debits)
     
     # Preprocess credits: filter, round amounts, and convert to cents
