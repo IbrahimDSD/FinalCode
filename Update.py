@@ -157,18 +157,32 @@ def calculate_aging_reports(transactions):
     transactions['converted'] = transactions.apply(convert_gold, axis=1)
     for _, r in transactions.iterrows():
         entry = {
-            'date': r['date'], 
+            'date': r['date'],
             'reference': r['reference'],
-            'amount': abs(r['converted']), 
+            'amount': abs(r['converted']),
             'remaining': abs(r['converted']),
-            'paid_date': None, 
+            'paid_date': None,
             'vat_amount': r['vat_amount'],
-            'plantid': r['plantid']  # إضافة plantid
+            'plantid': r.get('plantid', 0)  # Use 0 as default if plantid is missing
         }
-        if r['currencyid'] == 1:
-            (cash_debits if r['amount'] > 0 else cash_credits).append(entry)
-        else:
-            (gold_debits if r['amount'] > 0 else gold_credits).append(entry)
+        if r['amount'] > 0:  # Debits
+            if r['currencyid'] == 1:
+                cash_debits.append(entry)
+            else:
+                gold_debits.append(entry)
+        else:  # Credits
+            credit_entry = {
+                'date': r['date'],
+                'reference': r['reference'],
+                'amount': abs(r['converted']),
+                'plantid': r.get('plantid', 0)  # Ensure credits have plantid
+            }
+            if r['currencyid'] == 1:
+                cash_credits.append(credit_entry)
+            else:
+                gold_credits.append(credit_entry)
+    
+    # Sort debits to prioritize plantid=56
     cash = process_fifo_detailed(sorted(cash_debits, key=lambda x: (x['plantid'] != 56, x['date'])), cash_credits)
     gold = process_fifo_detailed(sorted(gold_debits, key=lambda x: (x['plantid'] != 56, x['date'])), gold_credits)
     cash_df = process_report(pd.DataFrame(cash), 1)
@@ -200,7 +214,7 @@ def process_fifo_detailed(debits, credits):
             'currencyid': d['currencyid'],
             'invoice_amount': inv_amt,
             'remaining_cents': int(inv_amt * 100),  # Convert to cents
-            'plantid': d['plantid']  # إضافة plantid
+            'plantid': d.get('plantid', 0)  # Default to 0 if plantid is missing
         })
     
     # Sort debits: plantid=56 comes first, then by date
@@ -239,7 +253,8 @@ def process_fifo_detailed(debits, credits):
                 'remaining': round(d['remaining_cents'] / 100.0, 2),
                 'paid_date': credit['date'],
                 'aging_days': (credit['date'] - d['date']).days,
-                'credit_reference': credit['reference']
+                'credit_reference': credit['reference'],
+                'plantid': d['plantid']  # Include plantid in output
             }
             detailed.append(event)
             if d['remaining_cents'] <= 0:
@@ -257,12 +272,12 @@ def process_fifo_detailed(debits, credits):
             'remaining': round(d['remaining_cents'] / 100.0, 2),
             'paid_date': None,
             'aging_days': (today - d['date']).days,
-            'credit_reference': '-'
+            'credit_reference': '-',
+            'plantid': d['plantid']  # Include plantid in output
         }
         detailed.append(event)
         
     return detailed
-
 # ----------------------------------------------
 def show_override_selector(raw, start_dt, key="overrides"):
     if raw is None or raw.empty:
