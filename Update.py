@@ -128,17 +128,23 @@ def process_transactions(raw, discounts, extras, start_date):
 
     def group_fn(g):
         fr = g.iloc[0]
-        ref, cur, orig = fr['reference'], fr['currencyid'], fr['amount']
+        ref, cur, orig, plantid = fr['reference'], fr['currencyid'], fr['amount'], fr['plantid']
         if ref.startswith('S') and cur == 1:
             valid = g[~g['baseAmount'].isna()].copy()
             valid['final'] = valid.apply(calc_row, axis=1)
             amt = valid['final'].sum()
         else:
             amt = orig
-        return pd.Series({'date': fr['date'], 'reference': ref,
-                          'currencyid': cur, 'amount': amt, 'original_amount': orig})
+        return pd.Series({
+            'date': fr['date'], 
+            'reference': ref,
+            'currencyid': cur, 
+            'amount': amt, 
+            'original_amount': orig,
+            'plantid': plantid  # إضافة plantid
+        })
 
-    grp = raw.groupby(['functionid', 'recordid', 'date', 'reference', 'currencyid', 'amount'])
+    grp = raw.groupby(['functionid', 'recordid', 'date', 'reference', 'currencyid', 'amount', 'plantid'])
     txs = grp.apply(group_fn).reset_index(drop=True)
     txs['date'] = pd.to_datetime(txs['date'])
     txs['converted'] = txs.apply(convert_gold, axis=1)
@@ -150,15 +156,21 @@ def calculate_aging_reports(transactions):
     transactions['vat_amount'] = transactions.apply(calculate_vat, axis=1)
     transactions['converted'] = transactions.apply(convert_gold, axis=1)
     for _, r in transactions.iterrows():
-        entry = {'date': r['date'], 'reference': r['reference'],
-                 'amount': abs(r['converted']), 'remaining': abs(r['converted']),
-                 'paid_date': None, 'vat_amount': r['vat_amount']}
+        entry = {
+            'date': r['date'], 
+            'reference': r['reference'],
+            'amount': abs(r['converted']), 
+            'remaining': abs(r['converted']),
+            'paid_date': None, 
+            'vat_amount': r['vat_amount'],
+            'plantid': r['plantid']  # إضافة plantid
+        }
         if r['currencyid'] == 1:
             (cash_debits if r['amount'] > 0 else cash_credits).append(entry)
         else:
             (gold_debits if r['amount'] > 0 else gold_credits).append(entry)
-    cash = process_fifo(sorted(cash_debits, key=lambda x: x['date']), cash_credits)
-    gold = process_fifo(sorted(gold_debits, key=lambda x: x['date']), gold_credits)
+    cash = process_fifo_detailed(sorted(cash_debits, key=lambda x: (x['plantid'] != 56, x['date'])), cash_credits)
+    gold = process_fifo_detailed(sorted(gold_debits, key=lambda x: (x['plantid'] != 56, x['date'])), gold_credits)
     cash_df = process_report(pd.DataFrame(cash), 1)
     gold_df = process_report(pd.DataFrame(gold), 2)
     df = pd.merge(cash_df, gold_df, on=['date', 'reference'], how='outer').fillna({
@@ -172,9 +184,8 @@ def calculate_aging_reports(transactions):
 def process_fifo_detailed(debits, credits):
     """
     Simulate FIFO with high performance using integer arithmetic (cents).
-    Each event's monetary fields are rounded to 2 decimal places.
+    Prioritize plantid=56 debits for payment first.
     Tracks the credit reference used for each payment.
-    Prioritizes plantid=56 debits in FIFO processing.
     """
     cutoff = pd.to_datetime("2023-01-01")
     # Preprocess debits: filter, round amounts, and convert to cents
@@ -189,11 +200,11 @@ def process_fifo_detailed(debits, credits):
             'currencyid': d['currencyid'],
             'invoice_amount': inv_amt,
             'remaining_cents': int(inv_amt * 100),  # Convert to cents
-            'is_plant_56': d.get('is_plant_56', False)  # Track if plantid=56
+            'plantid': d['plantid']  # إضافة plantid
         })
-    # Sort debits to prioritize plantid=56 (put them first, then sort by date)
-    debits_processed = sorted(debits_processed, key=lambda x: (not x['is_plant_56'], x['date']))
-    debits_q = deque(debits_processed)
+    
+    # Sort debits: plantid=56 comes first, then by date
+    debits_q = deque(sorted(debits_processed, key=lambda x: (x['plantid'] != 56, x['date'])))
     
     # Preprocess credits: filter, round amounts, convert to cents, and include reference
     sorted_credits = sorted([
@@ -523,8 +534,11 @@ def main():
         start_time = time.time()
         discounts = {50: discount_50, 47: discount_47, 61: discount_61, 62: discount_62, 48: discount_48}
         extras = {50: discount_45, 61: discount_45, 47: discount_46, 62: discount_46}
+        # في داخل دالة main، عند استدعاء process_transactions
         raw2 = raw.copy()
         raw2['date'] = pd.to_datetime(raw2['date'], errors='coerce')
+        mask_debits_56 = (raw2['plantid'] == 56) & (raw2['amount'] > 0)
+        raw2 = raw2.loc[~mask_debits_56].copy()  # لا تزال هذه الخطوة تزيل معاملات plantid=56 من تقرير Aging المجمع
         raw2 = apply_overrides(raw2, pd.to_datetime(start_date), overrides)
         txs = process_transactions(raw2, discounts, extras, pd.to_datetime(start_date))
         if txs.empty:
