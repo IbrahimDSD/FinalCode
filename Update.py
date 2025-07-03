@@ -162,16 +162,12 @@ def process_transactions(raw, discounts, extras, start_date):
     return txs
 
 def calculate_aging_reports(transactions):
-    """حساب تقرير Aging المُجمّع باستخدام FIFO مع استثناء المعاملات ذات الأولوية"""
+    """حساب تقرير Aging المُجمّع باستخدام FIFO"""
     cash_debits, cash_credits, gold_debits, gold_credits = [], [], [], []
     transactions['vat_amount'] = transactions.apply(calculate_vat, axis=1)
     transactions['converted'] = transactions.apply(convert_gold, axis=1)
     
     for _, r in transactions.iterrows():
-        # Skip priority transactions in aggregated report
-        if r['is_priority']:
-            continue
-            
         entry = {'date': r['date'], 'reference': r['reference'],
                  'amount': abs(r['converted']), 'remaining': abs(r['converted']),
                  'paid_date': None, 'vat_amount': r['vat_amount'],
@@ -200,7 +196,6 @@ def calculate_aging_reports(transactions):
 def process_fifo_detailed(debits, credits):
     """
     Simulate FIFO with high performance using integer arithmetic (cents).
-    Includes priority transactions and tracks credit reference.
     """
     cutoff = pd.to_datetime("2023-01-01")
     
@@ -235,8 +230,7 @@ def process_fifo_detailed(debits, credits):
     sorted_credits = sorted([
         {
             'date': c['date'],
-            'amount_cents': int(round(c['amount'], 2) * 100),
-            'reference': c.get('reference', 'Unknown-Credit')
+            'amount_cents': int(round(c['amount'], 2) * 100)
         }
         for c in credits if c['date'] >= cutoff
     ], key=lambda x: x['date'])
@@ -265,8 +259,7 @@ def process_fifo_detailed(debits, credits):
                 'Payment': round(payment_cents / 100.0, 2),
                 'remaining': round(d['remaining_cents'] / 100.0, 2),
                 'paid_date': credit['date'],
-                'aging_days': (credit['date'] - d['date']).days,
-                'credit_reference': credit['reference']
+                'aging_days': (credit['date'] - d['date']).days
             }
             detailed.append(event)
             
@@ -284,8 +277,7 @@ def process_fifo_detailed(debits, credits):
             'Payment': 0.00,
             'remaining': round(d['remaining_cents'] / 100.0, 2),
             'paid_date': None,
-            'aging_days': (today - d['date']).days,
-            'credit_reference': '-'
+            'aging_days': (today - d['date']).days
         }
         detailed.append(event)
         
@@ -546,7 +538,7 @@ def main():
         raw2 = raw.copy()
         raw2['date'] = pd.to_datetime(raw2['date'], errors='coerce')
 
-        # Apply overrides without removing plantid=56 transactions
+        # Apply overrides
         for label in overrides:
             fid, rid, *_ = label.split('|')
             raw2.loc[
@@ -559,7 +551,7 @@ def main():
             st.warning("لا توجد معاملات بعد المعالجة.")
             return
 
-        # Generate Aggregated Aging Report (excludes priority transactions)
+        # Generate Aggregated Aging Report
         report = calculate_aging_reports(txs)
         report = report[pd.to_datetime(report['date']) >= pd.to_datetime("2023-01-01")]
         report['date_dt'] = pd.to_datetime(report['date'])
@@ -620,7 +612,7 @@ def main():
         st.markdown("---")
         st.subheader("تفاصيل سداد فاتورة معينة")
 
-        # Build detailed FIFO events for installments (includes priority transactions)
+        # Build detailed FIFO events for installments
         cash_debits, cash_credits, gold_debits, gold_credits = [], [], [], []
         fioba = fetch_data(
             "SELECT fiscalYear, currencyid, amount FROM fioba WHERE fiscalYear = 2023 AND accountId = :acc",
@@ -671,14 +663,12 @@ def main():
                 if r['currencyid'] == 1:
                     cash_credits.append({
                         'date': r['date'], 
-                        'amount': abs(r['converted']),
-                        'reference': r['reference']
+                        'amount': abs(r['converted'])
                     })
                 else:
                     gold_credits.append({
                         'date': r['date'], 
-                        'amount': abs(r['converted']),
-                        'reference': r['reference']
+                        'amount': abs(r['converted'])
                     })
                     
         cash_details = process_fifo_detailed(cash_debits, cash_credits)
@@ -722,17 +712,15 @@ def main():
             
         st.markdown("### تفاصيل سداد الذهب")
         if not gold_details_df.empty:
-            # Remove 'is_priority' column from display
             display_cols = ['Invoice Date', 'reference', 'invoice_amount', 'Payment', 'remaining', 
-                            'Remaining %', 'Paid Date', 'aging_days', 'credit_reference']
+                            'Remaining %', 'Paid Date', 'aging_days']
             st.dataframe(gold_details_df[display_cols].reset_index(drop=True), use_container_width=True)
         else:
             st.info("لا توجد بيانات سداد ذهباً لهذه الفاتورة.")
         st.markdown("### تفاصيل سداد النقدية")
         if not cash_details_df.empty:
-            # Remove 'is_priority' column from display
             display_cols = ['Invoice Date', 'reference', 'invoice_amount', 'Payment', 'remaining', 
-                            'Remaining %', 'Paid Date', 'aging_days', 'credit_reference']
+                            'Remaining %', 'Paid Date', 'aging_days']
             st.dataframe(cash_details_df[display_cols].reset_index(drop=True), use_container_width=True)
         else:
             st.info("لا توجد بيانات سداد نقداً لهذه الفاتورة.")
