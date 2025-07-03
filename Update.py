@@ -182,8 +182,8 @@ def calculate_aging_reports(transactions):
         else:
             (gold_debits if r['amount'] > 0 else gold_credits).append(entry)
             
-    cash = process_fifo(sorted(cash_debits, key=lambda x: x['date']), cash_credits)
-    gold = process_fifo(sorted(gold_debits, key=lambda x: x['date']), gold_credits)
+    cash = process_fifo(cash_debits, cash_credits)
+    gold = process_fifo(gold_debits, gold_credits)
     
     cash_df = process_report(pd.DataFrame(cash), 1)
     gold_df = process_report(pd.DataFrame(gold), 2)
@@ -266,8 +266,7 @@ def process_fifo_detailed(debits, credits):
                 'remaining': round(d['remaining_cents'] / 100.0, 2),
                 'paid_date': credit['date'],
                 'aging_days': (credit['date'] - d['date']).days,
-                'credit_reference': credit['reference'],
-                'is_priority': d['is_priority']
+                'credit_reference': credit['reference']
             }
             detailed.append(event)
             
@@ -286,8 +285,7 @@ def process_fifo_detailed(debits, credits):
             'remaining': round(d['remaining_cents'] / 100.0, 2),
             'paid_date': None,
             'aging_days': (today - d['date']).days,
-            'credit_reference': '-',
-            'is_priority': d['is_priority']
+            'credit_reference': '-'
         }
         detailed.append(event)
         
@@ -724,18 +722,18 @@ def main():
             
         st.markdown("### تفاصيل سداد الذهب")
         if not gold_details_df.empty:
-            st.dataframe(gold_details_df[
-                             ['Invoice Date', 'reference', 'invoice_amount', 'Payment', 'remaining', 
-                              'Remaining %', 'Paid Date', 'aging_days', 'is_priority', 'credit_reference']
-                         ].reset_index(drop=True), use_container_width=True)
+            # Remove 'is_priority' column from display
+            display_cols = ['Invoice Date', 'reference', 'invoice_amount', 'Payment', 'remaining', 
+                            'Remaining %', 'Paid Date', 'aging_days', 'credit_reference']
+            st.dataframe(gold_details_df[display_cols].reset_index(drop=True), use_container_width=True)
         else:
             st.info("لا توجد بيانات سداد ذهباً لهذه الفاتورة.")
         st.markdown("### تفاصيل سداد النقدية")
         if not cash_details_df.empty:
-            st.dataframe(cash_details_df[
-                             ['Invoice Date', 'reference', 'invoice_amount', 'Payment', 'remaining', 
-                              'Remaining %', 'Paid Date', 'aging_days', 'is_priority', 'credit_reference']
-                         ].reset_index(drop=True), use_container_width=True)
+            # Remove 'is_priority' column from display
+            display_cols = ['Invoice Date', 'reference', 'invoice_amount', 'Payment', 'remaining', 
+                            'Remaining %', 'Paid Date', 'aging_days', 'credit_reference']
+            st.dataframe(cash_details_df[display_cols].reset_index(drop=True), use_container_width=True)
         else:
             st.info("لا توجد بيانات سداد نقداً لهذه الفاتورة.")
 
