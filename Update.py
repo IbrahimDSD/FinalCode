@@ -649,7 +649,7 @@ def main():
 
         if not cash_details_df.empty:
             cash_details_df['date'] = pd.to_datetime(cash_details_df['date'])
-            cash_details_df = cash_details_df[(cash_details_df['date'] >= pd.to_datetime(start_date)) &
+            cash_details_df = cash_details_df[
                                              (cash_details_df['date'] <= pd.to_datetime(end_date))]
             cash_details_df['Remaining %'] = cash_details_df.apply(
                 lambda r: (r['remaining'] / r['invoice_amount'] * 100) if r['invoice_amount'] != 0 else 0, axis=1
