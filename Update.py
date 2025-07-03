@@ -650,7 +650,7 @@ def main():
         if not cash_details_df.empty:
             cash_details_df['date'] = pd.to_datetime(cash_details_df['date'])
             cash_details_df = cash_details_df[
-                (cash_details_df['date'] <= pd.to_datetime(start_date)) &
+                (cash_details_df['date'] >= pd.to_datetime("2023-01-01")) &
                 (cash_details_df['date'] <= pd.to_datetime(end_date))
             ]
 
