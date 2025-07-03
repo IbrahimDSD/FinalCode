@@ -82,9 +82,25 @@ def convert_gold(row):
     return round(result, 2)
 
 def process_fifo(debits, credits):
-    """Process transactions using FIFO for discount report."""
-    debits_q = deque(sorted(debits, key=lambda x: x['date']))
+    """Process transactions using FIFO for discount report with priority for functionid=3104."""
+    # التأكد من أن كل إدخال في debits يحتوي على المفاتيح المطلوبة
+    for d in debits:
+        d.setdefault('functionid', 0)  # إضافة functionid افتراضي إذا كان مفقوداً
+        d.setdefault('currencyid', 1)  # إضافة currencyid افتراضي
+        d.setdefault('plantid', 0)     # إضافة plantid افتراضي
+    
+    # تقسيم المدينات إلى قائمتين: functionid=3104 وباقي المعاملات
+    priority_debits = [d for d in debits if d['functionid'] == 3104]
+    other_debits = [d for d in debits if d['functionid'] != 3104]
+    
+    # ترتيب كل قائمة حسب التاريخ
+    priority_debits = sorted(priority_debits, key=lambda x: x['date'])
+    other_debits = sorted(other_debits, key=lambda x: x['date'])
+    
+    # دمج القائمتين بحيث تكون المعاملات ذات functionid=3104 أولاً
+    debits_q = deque(priority_debits + other_debits)
     history = []
+    
     for credit in sorted(credits, key=lambda x: x['date']):
         rem = credit['amount']
         while rem > 0 and debits_q:
@@ -95,6 +111,7 @@ def process_fifo(debits, credits):
             if d['remaining'] <= 0:
                 d['paid_date'] = credit['date']
                 history.append(debits_q.popleft())
+    
     history.extend(debits_q)
     return history
 
@@ -118,6 +135,15 @@ def process_transactions(raw, discounts, extras, start_date):
     raw = raw.copy()
     raw['date'] = pd.to_datetime(raw['date'], errors='coerce')
     raw = raw.dropna(subset=['date'])
+    
+    # استبعاد معاملات plantid=56 ذات المبالغ الإيجابية (Debits)
+    raw = raw[~((raw['plantid'] == 56) & (raw['amount'] > 0))]
+    
+    # التأكد من أن currencyid و functionid و plantid موجودة ومعالجة القيم المفقودة
+    raw['currencyid'] = raw['currencyid'].fillna(1).astype(int)  # افتراضي: عملة نقدية
+    raw['functionid'] = raw['functionid'].fillna(0).astype(int)  # افتراضي: functionid غير معروف
+    raw['plantid'] = raw['plantid'].fillna(0).astype(int)       # افتراضي: plantid غير معروف
+
     def calc_row(r):
         base = r['baseAmount'] + r['basevatamount']
         if pd.to_datetime(r['date']) >= start_date:
@@ -128,7 +154,7 @@ def process_transactions(raw, discounts, extras, start_date):
 
     def group_fn(g):
         fr = g.iloc[0]
-        ref, cur, orig, plantid = fr['reference'], fr['currencyid'], fr['amount'], fr['plantid']
+        ref, cur, orig = fr['reference'], fr['currencyid'], fr['amount']
         if ref.startswith('S') and cur == 1:
             valid = g[~g['baseAmount'].isna()].copy()
             valid['final'] = valid.apply(calc_row, axis=1)
@@ -136,12 +162,13 @@ def process_transactions(raw, discounts, extras, start_date):
         else:
             amt = orig
         return pd.Series({
-            'date': fr['date'], 
+            'date': fr['date'],
             'reference': ref,
-            'currencyid': cur, 
-            'amount': amt, 
+            'currencyid': cur,
+            'amount': amt,
             'original_amount': orig,
-            'plantid': plantid  # إضافة plantid
+            'functionid': fr['functionid'],
+            'plantid': fr['plantid']  # إضافة plantid
         })
 
     grp = raw.groupby(['functionid', 'recordid', 'date', 'reference', 'currencyid', 'amount', 'plantid'])
@@ -151,10 +178,16 @@ def process_transactions(raw, discounts, extras, start_date):
     return txs
 
 def calculate_aging_reports(transactions):
-    """حساب تقرير Aging المُجمّع باستخدام FIFO."""
+    """حساب تقرير Aging المُجمّع باستخدام FIFO مع استبعاد functionid=3104 من التقرير."""
     cash_debits, cash_credits, gold_debits, gold_credits = [], [], [], []
     transactions['vat_amount'] = transactions.apply(calculate_vat, axis=1)
     transactions['converted'] = transactions.apply(convert_gold, axis=1)
+    
+    # التأكد من أن جميع الأعمدة المطلوبة موجودة
+    transactions['currencyid'] = transactions['currencyid'].fillna(1).astype(int)
+    transactions['functionid'] = transactions['functionid'].fillna(0).astype(int)
+    transactions['plantid'] = transactions['plantid'].fillna(0).astype(int)
+    
     for _, r in transactions.iterrows():
         entry = {
             'date': r['date'],
@@ -163,28 +196,23 @@ def calculate_aging_reports(transactions):
             'remaining': abs(r['converted']),
             'paid_date': None,
             'vat_amount': r['vat_amount'],
-            'plantid': r.get('plantid', 0)  # Use 0 as default if plantid is missing
+            'currencyid': r['currencyid'],
+            'functionid': r['functionid'],
+            'plantid': r['plantid']
         }
-        if r['amount'] > 0:  # Debits
-            if r['currencyid'] == 1:
-                cash_debits.append(entry)
-            else:
-                gold_debits.append(entry)
-        else:  # Credits
-            credit_entry = {
-                'date': r['date'],
-                'reference': r['reference'],
-                'amount': abs(r['converted']),
-                'plantid': r.get('plantid', 0)  # Ensure credits have plantid
-            }
-            if r['currencyid'] == 1:
-                cash_credits.append(credit_entry)
-            else:
-                gold_credits.append(credit_entry)
+        if r['currencyid'] == 1:
+            (cash_debits if r['amount'] > 0 else cash_credits).append(entry)
+        else:
+            (gold_debits if r['amount'] > 0 else gold_credits).append(entry)
     
-    # Sort debits to prioritize plantid=56
-    cash = process_fifo_detailed(sorted(cash_debits, key=lambda x: (x['plantid'] != 56, x['date'])), cash_credits)
-    gold = process_fifo_detailed(sorted(gold_debits, key=lambda x: (x['plantid'] != 56, x['date'])), gold_credits)
+    # معالجة FIFO مع الأولوية لـ functionid=3104
+    cash = process_fifo(sorted(cash_debits, key=lambda x: (x['functionid'] == 3104, x['date'])), cash_credits)
+    gold = process_fifo(sorted(gold_debits, key=lambda x: (x['functionid'] == 3104, x['date'])), gold_credits)
+    
+    # تصفية المعاملات ذات functionid=3104
+    cash = [entry for entry in cash if entry['functionid'] != 3104]
+    gold = [entry for entry in gold if entry['functionid'] != 3104]
+    
     cash_df = process_report(pd.DataFrame(cash), 1)
     gold_df = process_report(pd.DataFrame(gold), 2)
     df = pd.merge(cash_df, gold_df, on=['date', 'reference'], how='outer').fillna({
@@ -198,34 +226,38 @@ def calculate_aging_reports(transactions):
 def process_fifo_detailed(debits, credits):
     """
     Simulate FIFO with high performance using integer arithmetic (cents).
-    Prioritize plantid=56 debits for payment first.
-    Tracks the credit reference used for each payment.
+    Each event's monetary fields are rounded to 2 decimal places.
     """
     cutoff = pd.to_datetime("2023-01-01")
+    
     # Preprocess debits: filter, round amounts, and convert to cents
     debits_processed = []
     for d in debits:
         if d['date'] < cutoff:
             continue
+        # التأكد من وجود المفاتيح المطلوبة
+        d.setdefault('currencyid', 1)  # افتراضي: عملة نقدية
+        d.setdefault('functionid', 0)  # افتراضي: functionid غير معروف
+        d.setdefault('plantid', 0)     # افتراضي: plantid غير معروف
         inv_amt = round(d['amount'], 2)
         debits_processed.append({
             'date': d['date'],
             'reference': d['reference'],
             'currencyid': d['currencyid'],
+            'functionid': d['functionid'],
+            'plantid': d['plantid'],
             'invoice_amount': inv_amt,
-            'remaining_cents': int(inv_amt * 100),  # Convert to cents
-            'plantid': d.get('plantid', 0)  # Default to 0 if plantid is missing
+            'remaining_cents': int(inv_amt * 100)  # dollars to cents
         })
     
-    # Sort debits: plantid=56 comes first, then by date
-    debits_q = deque(sorted(debits_processed, key=lambda x: (x['plantid'] != 56, x['date'])))
+    # ترتيب المدينات مع إعطاء الأولوية لـ functionid=3104
+    debits_q = deque(sorted(debits_processed, key=lambda x: (x['functionid'] != 3104, x['date'])))
     
-    # Preprocess credits: filter, round amounts, convert to cents, and include reference
+    # Preprocess credits: filter, round amounts, and convert to cents
     sorted_credits = sorted([
         {
             'date': c['date'],
-            'amount_cents': int(round(c['amount'], 2) * 100),
-            'reference': c.get('reference', 'Unknown-Credit')
+            'amount_cents': int(round(c['amount'], 2) * 100)
         }
         for c in credits if c['date'] >= cutoff
     ], key=lambda x: x['date'])
@@ -238,12 +270,18 @@ def process_fifo_detailed(debits, credits):
         rem_credit_cents = credit['amount_cents']
         while rem_credit_cents > 0 and debits_q:
             d = debits_q[0]
+            # Remove fully paid debits
             if d['remaining_cents'] <= 0:
                 debits_q.popleft()
                 continue
+                
+            # Calculate payment in cents
             payment_cents = min(rem_credit_cents, d['remaining_cents'])
+            # Update remaining amounts
             d['remaining_cents'] -= payment_cents
             rem_credit_cents -= payment_cents
+            
+            # Record payment event
             event = {
                 'date': d['date'],
                 'reference': d['reference'],
@@ -252,11 +290,11 @@ def process_fifo_detailed(debits, credits):
                 'Payment': round(payment_cents / 100.0, 2),
                 'remaining': round(d['remaining_cents'] / 100.0, 2),
                 'paid_date': credit['date'],
-                'aging_days': (credit['date'] - d['date']).days,
-                'credit_reference': credit['reference'],
-                'plantid': d['plantid']  # Include plantid in output
+                'aging_days': (credit['date'] - d['date']).days
             }
             detailed.append(event)
+            
+            # Remove debit if fully paid
             if d['remaining_cents'] <= 0:
                 debits_q.popleft()
     
@@ -271,9 +309,7 @@ def process_fifo_detailed(debits, credits):
             'Payment': 0.00,
             'remaining': round(d['remaining_cents'] / 100.0, 2),
             'paid_date': None,
-            'aging_days': (today - d['date']).days,
-            'credit_reference': '-',
-            'plantid': d['plantid']  # Include plantid in output
+            'aging_days': (today - d['date']).days
         }
         detailed.append(event)
         
