@@ -174,6 +174,7 @@ def process_fifo_detailed(debits, credits):
     Simulate FIFO with high performance using integer arithmetic (cents).
     Each event's monetary fields are rounded to 2 decimal places.
     Tracks the credit reference used for each payment.
+    Prioritizes plantid=56 debits in FIFO processing.
     """
     cutoff = pd.to_datetime("2023-01-01")
     # Preprocess debits: filter, round amounts, and convert to cents
@@ -187,8 +188,11 @@ def process_fifo_detailed(debits, credits):
             'reference': d['reference'],
             'currencyid': d['currencyid'],
             'invoice_amount': inv_amt,
-            'remaining_cents': int(inv_amt * 100)  # Convert to cents
+            'remaining_cents': int(inv_amt * 100),  # Convert to cents
+            'is_plant_56': d.get('is_plant_56', False)  # Track if plantid=56
         })
+    # Sort debits to prioritize plantid=56 (put them first, then sort by date)
+    debits_processed = sorted(debits_processed, key=lambda x: (not x['is_plant_56'], x['date']))
     debits_q = deque(debits_processed)
     
     # Preprocess credits: filter, round amounts, convert to cents, and include reference
@@ -196,7 +200,7 @@ def process_fifo_detailed(debits, credits):
         {
             'date': c['date'],
             'amount_cents': int(round(c['amount'], 2) * 100),
-            'reference': c.get('reference', 'Unknown-Credit')  # Add credit reference
+            'reference': c.get('reference', 'Unknown-Credit')
         }
         for c in credits if c['date'] >= cutoff
     ], key=lambda x: x['date'])
@@ -224,7 +228,7 @@ def process_fifo_detailed(debits, credits):
                 'remaining': round(d['remaining_cents'] / 100.0, 2),
                 'paid_date': credit['date'],
                 'aging_days': (credit['date'] - d['date']).days,
-                'credit_reference': credit['reference']  # Add credit reference to event
+                'credit_reference': credit['reference']
             }
             detailed.append(event)
             if d['remaining_cents'] <= 0:
@@ -242,7 +246,7 @@ def process_fifo_detailed(debits, credits):
             'remaining': round(d['remaining_cents'] / 100.0, 2),
             'paid_date': None,
             'aging_days': (today - d['date']).days,
-            'credit_reference': '-'  # No credit for unpaid invoices
+            'credit_reference': '-'
         }
         detailed.append(event)
         
@@ -423,14 +427,14 @@ def export_pdf(report_df, cash_details_df, gold_details_df, params):
                 str(row['Remaining %']),
                 str(row['Paid Date']),
                 str(row['aging_days']),
-                str(row['credit_reference'])  # Add credit reference
+                str(row['credit_reference'])
             ]
             for w, text in zip(col_widths, cells):
                 pdf.cell(w, row_h, reshape_text(text), border=1, align='C')
             pdf.ln()
 
     # Add detailed tables
-    detail_col_widths = [30, 40, 30, 30, 30, 30, 35, 30, 40]  # Adjusted for credit_reference
+    detail_col_widths = [30, 40, 30, 30, 30, 30, 35, 30, 40]
     detail_headers = [
         "تاريخ الفاتورة", "الرقم المرجعي", "مبلغ الفاتورة", "الدفعة",
         "المتبقي", "نسبة المتبقي", "تاريخ السداد", "أيام التأخير", "مرجع السداد"
@@ -521,8 +525,6 @@ def main():
         extras = {50: discount_45, 61: discount_45, 47: discount_46, 62: discount_46}
         raw2 = raw.copy()
         raw2['date'] = pd.to_datetime(raw2['date'], errors='coerce')
-        mask_debits_56 = (raw2['plantid'] == 56) & (raw2['amount'] > 0)
-        raw2 = raw2.loc[~mask_debits_56].copy()
         raw2 = apply_overrides(raw2, pd.to_datetime(start_date), overrides)
         txs = process_transactions(raw2, discounts, extras, pd.to_datetime(start_date))
         if txs.empty:
@@ -607,7 +609,8 @@ def main():
                     'reference': 'Opening-Balance-2023',
                     'currencyid': r['currencyid'],
                     'amount': abs(conv),
-                    'remaining': abs(conv)
+                    'remaining': abs(conv),
+                    'is_plant_56': False
                 }
                 if entry_date >= pd.to_datetime("2023-01-01"):
                     if conv >= 0:
@@ -628,7 +631,8 @@ def main():
                 'reference': r['reference'],
                 'currencyid': r['currencyid'],
                 'amount': abs(r['converted']),
-                'remaining': abs(r['converted'])
+                'remaining': abs(r['converted']),
+                'is_plant_56': r.get('plantid', 0) == 56 and r['amount'] > 0
             }
             if r['amount'] > 0:
                 if r['currencyid'] == 1:
@@ -649,13 +653,8 @@ def main():
 
         if not cash_details_df.empty:
             cash_details_df['date'] = pd.to_datetime(cash_details_df['date'])
-            cash_details_df = cash_details_df[
-                (cash_details_df['date'] >= pd.to_datetime("2023-01-01")) &
-                (cash_details_df['date'] <= pd.to_datetime(end_date))
-            ]
-
-# بعد: احتفظ فقط بفلترة على تاريخ النهاية
-               
+            cash_details_df = cash_details_df[(cash_details_df['date'] >= pd.to_datetime(start_date)) &
+                                             (cash_details_df['date'] <= pd.to_datetime(end_date))]
             cash_details_df['Remaining %'] = cash_details_df.apply(
                 lambda r: (r['remaining'] / r['invoice_amount'] * 100) if r['invoice_amount'] != 0 else 0, axis=1
             )
