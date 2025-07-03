@@ -119,7 +119,7 @@ def process_fifo(debits, credits):
     history.extend(debits_q)
     return history
 
-def process_report.COLUMN_NAME
+def process_report(df, currency_type):
     df['date'] = pd.to_datetime(df['date'], errors='coerce').dt.floor('D')
     df['paid_date'] = pd.to_datetime(df['paid_date'], errors='coerce').dt.floor('D')
     df['aging_days'] = np.where(df['paid_date'].isna(), '-',
