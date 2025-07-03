@@ -173,6 +173,7 @@ def process_fifo_detailed(debits, credits):
     """
     Simulate FIFO with high performance using integer arithmetic (cents).
     Each event's monetary fields are rounded to 2 decimal places.
+    Tracks the credit reference used for each payment.
     """
     cutoff = pd.to_datetime("2023-01-01")
     # Preprocess debits: filter, round amounts, and convert to cents
@@ -190,11 +191,12 @@ def process_fifo_detailed(debits, credits):
         })
     debits_q = deque(debits_processed)
     
-    # Preprocess credits: filter, round amounts, and convert to cents
+    # Preprocess credits: filter, round amounts, convert to cents, and include reference
     sorted_credits = sorted([
         {
             'date': c['date'],
-            'amount_cents': int(round(c['amount'], 2) * 100)
+            'amount_cents': int(round(c['amount'], 2) * 100),
+            'reference': c.get('reference', 'Unknown-Credit')  # Add credit reference
         }
         for c in credits if c['date'] >= cutoff
     ], key=lambda x: x['date'])
@@ -221,7 +223,8 @@ def process_fifo_detailed(debits, credits):
                 'Payment': round(payment_cents / 100.0, 2),
                 'remaining': round(d['remaining_cents'] / 100.0, 2),
                 'paid_date': credit['date'],
-                'aging_days': (credit['date'] - d['date']).days
+                'aging_days': (credit['date'] - d['date']).days,
+                'credit_reference': credit['reference']  # Add credit reference to event
             }
             detailed.append(event)
             if d['remaining_cents'] <= 0:
@@ -238,7 +241,8 @@ def process_fifo_detailed(debits, credits):
             'Payment': 0.00,
             'remaining': round(d['remaining_cents'] / 100.0, 2),
             'paid_date': None,
-            'aging_days': (today - d['date']).days
+            'aging_days': (today - d['date']).days,
+            'credit_reference': '-'  # No credit for unpaid invoices
         }
         detailed.append(event)
         
@@ -418,17 +422,18 @@ def export_pdf(report_df, cash_details_df, gold_details_df, params):
                 str(row['remaining']),
                 str(row['Remaining %']),
                 str(row['Paid Date']),
-                str(row['aging_days'])
+                str(row['aging_days']),
+                str(row['credit_reference'])  # Add credit reference
             ]
             for w, text in zip(col_widths, cells):
                 pdf.cell(w, row_h, reshape_text(text), border=1, align='C')
             pdf.ln()
 
     # Add detailed tables
-    detail_col_widths = [30, 40, 30, 30, 30, 30, 35, 30]
+    detail_col_widths = [30, 40, 30, 30, 30, 30, 35, 30, 40]  # Adjusted for credit_reference
     detail_headers = [
         "تاريخ الفاتورة", "الرقم المرجعي", "مبلغ الفاتورة", "الدفعة",
-        "المتبقي", "نسبة المتبقي", "تاريخ السداد", "أيام التأخير"
+        "المتبقي", "نسبة المتبقي", "تاريخ السداد", "أيام التأخير", "مرجع السداد"
     ]
     add_details_table(gold_details_df, "تفاصيل سداد الذهب", detail_headers, detail_col_widths)
     add_details_table(cash_details_df, "تفاصيل سداد النقدية", detail_headers, detail_col_widths)
@@ -612,9 +617,9 @@ def main():
                             gold_debits.append(entry)
                     else:
                         if r['currencyid'] == 1:
-                            cash_credits.append({'date': entry_date, 'amount': abs(conv)})
+                            cash_credits.append({'date': entry_date, 'amount': abs(conv), 'reference': 'Opening-Balance-2023'})
                         else:
-                            gold_credits.append({'date': entry_date, 'amount': abs(conv)})
+                            gold_credits.append({'date': entry_date, 'amount': abs(conv), 'reference': 'Opening-Balance-2023'})
         for _, r in txs.iterrows():
             if r['date'] < pd.to_datetime("2023-01-01"):
                 continue
@@ -632,9 +637,9 @@ def main():
                     gold_debits.append(entry)
             else:
                 if r['currencyid'] == 1:
-                    cash_credits.append({'date': r['date'], 'amount': abs(r['converted'])})
+                    cash_credits.append({'date': r['date'], 'amount': abs(r['converted']), 'reference': r['reference']})
                 else:
-                    gold_credits.append({'date': r['date'], 'amount': abs(r['converted'])})
+                    gold_credits.append({'date': r['date'], 'amount': abs(r['converted']), 'reference': r['reference']})
         cash_details = process_fifo_detailed(sorted(cash_debits, key=lambda x: x['date']),
                                             sorted(cash_credits, key=lambda x: x['date']))
         gold_details = process_fifo_detailed(sorted(gold_debits, key=lambda x: x['date']),
@@ -682,7 +687,7 @@ def main():
         if not gold_details_df.empty:
             st.dataframe(gold_details_df[
                              ['Invoice Date', 'reference', 'invoice_amount', 'Payment', 'remaining', 'Remaining %',
-                              'Paid Date', 'aging_days']
+                              'Paid Date', 'aging_days', 'credit_reference']
                          ].reset_index(drop=True), use_container_width=True)
         else:
             st.info("لا توجد بيانات سداد ذهباً لهذه الفاتورة.")
@@ -690,7 +695,7 @@ def main():
         if not cash_details_df.empty:
             st.dataframe(cash_details_df[
                              ['Invoice Date', 'reference', 'invoice_amount', 'Payment', 'remaining', 'Remaining %',
-                              'Paid Date', 'aging_days']
+                              'Paid Date', 'aging_days', 'credit_reference']
                          ].reset_index(drop=True), use_container_width=True)
         else:
             st.info("لا توجد بيانات سداد نقداً لهذه الفاتورة.")
